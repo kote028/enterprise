@@ -5440,6 +5440,7 @@ class TestLiveStatusAppConversationService:
             'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
         )
 
+    @pytest.mark.parametrize('timed_out', [False, True])
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
     )
@@ -5447,7 +5448,7 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
     )
     async def test_start_app_conversation_reports_failed_repository_clone(
-        self, mock_conversation_info_class, mock_remote_workspace_class
+        self, mock_conversation_info_class, mock_remote_workspace_class, timed_out
     ):
         """A selected repository that cannot be cloned fails the start task with
         a clear message instead of starting a conversation on an empty
@@ -5474,7 +5475,8 @@ class TestLiveStatusAppConversationService:
         async def execute_command(command, cwd=None, timeout=None):
             if ' clone ' in command:
                 return Mock(
-                    exit_code=128,
+                    exit_code=-1 if timed_out else 128,
+                    timeout_occurred=timed_out,
                     stdout='',
                     stderr=f"fatal: unable to access 'https://x-access-token:{token}@github.com/'",
                 )
@@ -5490,7 +5492,9 @@ class TestLiveStatusAppConversationService:
         statuses = []
         async for task in self.service._start_app_conversation(
             AppConversationStartRequest(
-                selected_repository='owner/repo', git_provider=ProviderType.GITHUB
+                selected_repository='owner/repo',
+                selected_branch='main',
+                git_provider=ProviderType.GITHUB,
             )
         ):
             statuses.append(task.status)
@@ -5498,7 +5502,10 @@ class TestLiveStatusAppConversationService:
         assert AppConversationStartTaskStatus.READY not in statuses
         assert statuses[-1] == AppConversationStartTaskStatus.ERROR
         assert task.detail == (
-            "Could not clone the selected repository 'owner/repo'. Check that the "
+            "Cloning the selected repository 'owner/repo' at branch 'main' "
+            'timed out after 120 seconds.'
+            if timed_out
+            else "Could not clone the selected repository 'owner/repo' at branch 'main'. Check that the "
             'repository and branch exist and that you have access to them, then '
             'try again.'
         )
