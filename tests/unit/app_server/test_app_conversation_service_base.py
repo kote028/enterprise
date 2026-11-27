@@ -70,6 +70,7 @@ class MockCommandResult:
         stdout: str = '',
     ):
         self.exit_code = exit_code
+        self.timeout_occurred = False
         self.stderr = stderr
         self.stdout = stdout
 

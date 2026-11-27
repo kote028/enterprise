@@ -103,6 +103,11 @@ PRE_COMMIT_LOCAL = '.git/hooks/pre-commit.local'
 _GPG_SECRET_NAMES = frozenset({'GPG_KEY', 'GPG_PRIVATE_KEY'})
 
 _ADDITIONAL_CLONE_CONCURRENCY = 3
+_CLONE_TIMEOUT_SECONDS = 120
+
+
+class _CloneTimeoutError(TimeoutError):
+    """The workspace reported that the git clone command timed out."""
 
 
 def azure_devops_repositories(
@@ -951,21 +956,25 @@ class AppConversationServiceBase(AppConversationService, ABC):
             ensure_valid_git_branch_name(request.selected_branch)
 
         full_clone = bool(getattr(user_info, 'git_full_clone', False))
-        cloned = await self._clone_repository(
-            workspace,
-            remote_repo_url,
-            dir_name,
-            request.selected_branch,
-            request.git_provider,
-            full_clone,
-            task=task,
+        at_branch = (
+            f' at branch {request.selected_branch!r}' if request.selected_branch else ''
         )
-        if not cloned:
-            at_branch = (
-                f' at branch {request.selected_branch!r}'
-                if request.selected_branch
-                else ''
+        try:
+            cloned = await self._clone_repository(
+                workspace,
+                remote_repo_url,
+                dir_name,
+                request.selected_branch,
+                request.git_provider,
+                full_clone,
+                task=task,
             )
+        except _CloneTimeoutError:
+            raise ValueError(
+                f'Cloning the selected repository {request.selected_repository!r}'
+                f'{at_branch} timed out after {_CLONE_TIMEOUT_SECONDS} seconds.'
+            ) from None
+        if not cloned:
             raise ValueError(
                 'Could not clone the selected repository '
                 f'{request.selected_repository!r}{at_branch}. Check that the '
@@ -1028,7 +1037,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 f'git clone{clone_flags} {quoted_remote_repo_url} {quoted_dir_name}'
             )
         result = await workspace.execute_command(
-            clone_command, workspace.working_dir, 120
+            clone_command, workspace.working_dir, _CLONE_TIMEOUT_SECONDS
         )
         if result.exit_code:
             _logger.warning(
@@ -1044,6 +1053,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 workspace.working_dir,
             )
             if existing.exit_code:
+                if result.timeout_occurred:
+                    raise _CloneTimeoutError
                 return False
             if clean_url is not None:
                 await self._strip_origin_credentials(workspace, git_dir, prefixes)
